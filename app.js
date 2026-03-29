@@ -16,8 +16,6 @@ import {
 import {
   getAuth,
   signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
   GoogleAuthProvider,
   onAuthStateChanged,
   signOut
@@ -73,55 +71,47 @@ const fab = document.getElementById("fab");
 let editingTaskId = null;
 
 // ===== Auth =====
+
+// Start hidden — show nothing until auth state is known
+loginScreen.classList.add("hidden");
+appContainer.classList.add("hidden");
+
 btnLogin.addEventListener("click", async () => {
   loginError.classList.add("hidden");
+  btnLogin.disabled = true;
+  btnLogin.style.opacity = "0.5";
   try {
-    // Use redirect on mobile (popup often blocked), popup on desktop
-    if (window.matchMedia("(max-width: 768px)").matches) {
-      await signInWithRedirect(auth, googleProvider);
-    } else {
-      await signInWithPopup(auth, googleProvider);
-    }
+    await signInWithPopup(auth, googleProvider);
   } catch (err) {
     console.error("Auth error:", err);
-    loginError.textContent = "Erreur de connexion. Reessaie.";
+    if (err.code === 'auth/popup-blocked') {
+      loginError.textContent = "Popup bloquee. Autorise les popups pour ce site.";
+    } else if (err.code === 'auth/popup-closed-by-user') {
+      // User closed it, no error to show
+    } else {
+      loginError.textContent = "Erreur de connexion. Reessaie.";
+    }
     loginError.classList.remove("hidden");
-  }
-});
-
-// Handle redirect result (for mobile)
-getRedirectResult(auth).catch(err => {
-  if (err.code !== 'auth/redirect-cancelled-by-user') {
-    console.error("Redirect auth error:", err);
+  } finally {
+    btnLogin.disabled = false;
+    btnLogin.style.opacity = "";
   }
 });
 
 onAuthStateChanged(auth, (user) => {
   if (user) {
     currentUser = user;
-    console.log("=== CONNECTED ===");
-    console.log("UID:", user.uid);
-    console.log("Email:", user.email);
-    console.log("=================");
-    console.log("Copy this UID for Firestore rules:", user.uid);
-    showApp();
+    console.log("Connecte:", user.email, "| UID:", user.uid);
+    loginScreen.classList.add("hidden");
+    appContainer.classList.remove("hidden");
     startFirestore();
   } else {
     currentUser = null;
-    showLogin();
+    loginScreen.classList.remove("hidden");
+    appContainer.classList.add("hidden");
     stopFirestore();
   }
 });
-
-function showLogin() {
-  loginScreen.classList.remove("hidden");
-  appContainer.classList.add("hidden");
-}
-
-function showApp() {
-  loginScreen.classList.add("hidden");
-  appContainer.classList.remove("hidden");
-}
 
 function startFirestore() {
   tasksRef = collection(db, "boards", BOARD_ID, "tasks");
