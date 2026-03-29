@@ -265,15 +265,24 @@ function snapBack(card) {
 // =============================================
 
 function updateAutoScroll(clientY, target) {
-  const vh = window.innerHeight;
+  // Desktop: detect edges of the column container
+  // Mobile:  detect edges of the viewport
+  let edgeTop, edgeBottom;
+  if (target) {
+    const rect = target.getBoundingClientRect();
+    edgeTop = rect.top;
+    edgeBottom = rect.bottom;
+  } else {
+    edgeTop = 0;
+    edgeBottom = window.innerHeight;
+  }
 
-  // How close to the edge? → scroll speed (0 to AUTO_SCROLL_MAX)
-  if (clientY < AUTO_SCROLL_EDGE) {
-    const ratio = 1 - clientY / AUTO_SCROLL_EDGE;
-    autoScrollSpeed = -AUTO_SCROLL_MAX * ratio; // scroll up
-  } else if (clientY > vh - AUTO_SCROLL_EDGE) {
-    const ratio = 1 - (vh - clientY) / AUTO_SCROLL_EDGE;
-    autoScrollSpeed = AUTO_SCROLL_MAX * ratio;  // scroll down
+  if (clientY < edgeTop + AUTO_SCROLL_EDGE) {
+    const ratio = Math.min(1, Math.max(0, 1 - (clientY - edgeTop) / AUTO_SCROLL_EDGE));
+    autoScrollSpeed = -AUTO_SCROLL_MAX * ratio;
+  } else if (clientY > edgeBottom - AUTO_SCROLL_EDGE) {
+    const ratio = Math.min(1, Math.max(0, 1 - (edgeBottom - clientY) / AUTO_SCROLL_EDGE));
+    autoScrollSpeed = AUTO_SCROLL_MAX * ratio;
   } else {
     autoScrollSpeed = 0;
   }
