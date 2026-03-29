@@ -22,6 +22,13 @@ const DECIDE_THRESHOLD = 8;
 let momentumRAF = null;
 let momentumVelocity = 0;
 
+// Auto-scroll during drag (continuous rAF loop)
+let autoScrollRAF = null;
+let autoScrollSpeed = 0;       // px per frame, negative = up, positive = down
+let autoScrollTarget = null;   // null = window, HTMLElement = column container
+const AUTO_SCROLL_EDGE = 60;   // px from viewport edge to trigger
+const AUTO_SCROLL_MAX = 10;    // max px per frame
+
 function isMobile() {
   return window.matchMedia("(max-width: 768px)").matches;
 }
@@ -252,6 +259,57 @@ function snapBack(card) {
 }
 
 // =============================================
+// AUTO-SCROLL (shared by mobile reorder + desktop drag)
+// Runs a rAF loop that scrolls continuously while
+// the ghost is near the top/bottom edge of the viewport.
+// =============================================
+
+function updateAutoScroll(clientY, target) {
+  const vh = window.innerHeight;
+
+  // How close to the edge? → scroll speed (0 to AUTO_SCROLL_MAX)
+  if (clientY < AUTO_SCROLL_EDGE) {
+    const ratio = 1 - clientY / AUTO_SCROLL_EDGE;
+    autoScrollSpeed = -AUTO_SCROLL_MAX * ratio; // scroll up
+  } else if (clientY > vh - AUTO_SCROLL_EDGE) {
+    const ratio = 1 - (vh - clientY) / AUTO_SCROLL_EDGE;
+    autoScrollSpeed = AUTO_SCROLL_MAX * ratio;  // scroll down
+  } else {
+    autoScrollSpeed = 0;
+  }
+
+  autoScrollTarget = target;
+
+  // Start the loop if needed
+  if (autoScrollSpeed !== 0 && !autoScrollRAF) {
+    autoScrollRAF = requestAnimationFrame(autoScrollTick);
+  }
+}
+
+function autoScrollTick() {
+  if (autoScrollSpeed === 0) {
+    autoScrollRAF = null;
+    return;
+  }
+
+  if (autoScrollTarget) {
+    autoScrollTarget.scrollTop += autoScrollSpeed;
+  } else {
+    window.scrollBy(0, autoScrollSpeed);
+  }
+
+  autoScrollRAF = requestAnimationFrame(autoScrollTick);
+}
+
+function stopAutoScroll() {
+  autoScrollSpeed = 0;
+  if (autoScrollRAF) {
+    cancelAnimationFrame(autoScrollRAF);
+    autoScrollRAF = null;
+  }
+}
+
+// =============================================
 // MOBILE REORDER (long-press → vertical drag)
 // =============================================
 
@@ -282,6 +340,9 @@ function onReorderMove(e) {
   ghost.style.left = (e.clientX - offsetX) + "px";
   ghost.style.top = (e.clientY - offsetY) + "px";
 
+  // Auto-scroll page when dragging near edges
+  updateAutoScroll(e.clientY, null);
+
   const col = document.querySelector(`.column[data-column="${column}"]`);
   if (col) showMobileDropIndicator(col, e.clientY);
 }
@@ -298,6 +359,7 @@ function finishMobileReorder(e) {
   card.classList.remove("dragging");
   if (ghost) ghost.remove();
   removeMobileDropIndicator();
+  stopAutoScroll();
   callbacks.onDragEnd();
 }
 
@@ -393,8 +455,12 @@ function onDragMove(e) {
   highlightColumn(targetCol);
 
   if (targetCol) {
+    // Auto-scroll the column container when near its edges
+    const container = targetCol.querySelector(".column-cards");
+    updateAutoScroll(e.clientY, container);
     showDesktopDropIndicator(targetCol, e.clientY);
   } else {
+    stopAutoScroll();
     removeDesktopDropIndicator();
   }
 }
@@ -416,6 +482,7 @@ function onDragUp(e) {
   ghost.remove();
   removeDesktopDropIndicator();
   clearHighlights();
+  stopAutoScroll();
 
   card.removeEventListener("pointermove", onDragMove);
   card.removeEventListener("pointerup", onDragUp);
