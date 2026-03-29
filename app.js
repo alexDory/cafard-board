@@ -9,7 +9,6 @@ import {
   onSnapshot,
   query,
   orderBy,
-  getDocs,
   writeBatch,
   serverTimestamp,
   enableIndexedDbPersistence
@@ -21,7 +20,6 @@ import { initDragAndDrop } from "./drag.js";
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// Enable offline persistence
 enableIndexedDbPersistence(db).catch(err => {
   if (err.code === 'failed-precondition') {
     console.warn('Offline persistence failed: multiple tabs open');
@@ -37,6 +35,7 @@ const tasksRef = collection(db, "boards", BOARD_ID, "tasks");
 let tasks = new Map();
 let isDragging = false;
 let pendingSnapshot = null;
+let activeTab = "todo";
 
 // ===== DOM Elements =====
 const board = document.getElementById("board");
@@ -50,6 +49,8 @@ const btnSave = document.getElementById("btnSave");
 const btnCancel = document.getElementById("btnCancel");
 const btnDelete = document.getElementById("btnDelete");
 const statusDot = document.getElementById("statusDot");
+const tabBar = document.getElementById("tabBar");
+const fab = document.getElementById("fab");
 
 let editingTaskId = null;
 
@@ -62,6 +63,30 @@ function updateOnlineStatus() {
 window.addEventListener("online", updateOnlineStatus);
 window.addEventListener("offline", updateOnlineStatus);
 updateOnlineStatus();
+
+// ===== Mobile Tabs =====
+function switchTab(column) {
+  activeTab = column;
+
+  // Update tab UI
+  tabBar.querySelectorAll(".tab").forEach(tab => {
+    tab.classList.toggle("active", tab.dataset.tab === column);
+  });
+
+  // Show only active column
+  document.querySelectorAll(".column").forEach(col => {
+    col.classList.toggle("mobile-active", col.dataset.column === column);
+  });
+}
+
+tabBar.addEventListener("click", (e) => {
+  const tab = e.target.closest(".tab");
+  if (!tab) return;
+  switchTab(tab.dataset.tab);
+});
+
+// Init: show first tab on mobile
+switchTab("todo");
 
 // ===== Render =====
 function renderBoard() {
@@ -77,7 +102,9 @@ function renderBoard() {
 
     const container = document.querySelector(`[data-cards="${col}"]`);
     const countEl = document.querySelector(`[data-count="${col}"]`);
+    const tabCountEl = document.querySelector(`[data-tab-count="${col}"]`);
     countEl.textContent = columns[col].length;
+    if (tabCountEl) tabCountEl.textContent = columns[col].length;
 
     const existingIds = new Set();
     columns[col].forEach(task => existingIds.add(task.id));
@@ -102,7 +129,6 @@ function renderBoard() {
         }
       } else {
         updateCardElement(card, task);
-        // Reorder if needed
         if (prevEl && prevEl.nextSibling !== card) {
           container.insertBefore(card, prevEl.nextSibling);
         } else if (!prevEl && container.firstChild !== card) {
@@ -118,7 +144,6 @@ function createCardElement(task) {
   const card = document.createElement("div");
   card.className = "card";
   card.dataset.id = task.id;
-  card.setAttribute("touch-action", "none");
   updateCardElement(card, task);
   return card;
 }
@@ -133,7 +158,6 @@ function updateCardElement(card, task) {
     ${task.when ? `<span class="card-when">${escapeHtml(task.when)}</span>` : ""}
   `;
 
-  // Edit button
   card.querySelector('[data-action="edit"]').addEventListener("click", (e) => {
     e.stopPropagation();
     openEditModal(task.id);
@@ -171,6 +195,28 @@ export async function moveTask(taskId, newColumn, newOrder) {
   });
 }
 
+// Move task to adjacent column (for swipe), keeping same order
+export async function moveTaskColumn(taskId, newColumn, direction) {
+  const task = tasks.get(taskId);
+  if (!task) return;
+
+  // Calculate order: place at end of target column
+  const targetTasks = [...tasks.values()].filter(t => t.column === newColumn);
+  const maxOrder = targetTasks.reduce((max, t) => Math.max(max, t.order || 0), 0);
+
+  const taskRef = doc(db, "boards", BOARD_ID, "tasks", taskId);
+  await updateDoc(taskRef, {
+    column: newColumn,
+    order: maxOrder + 1000,
+    updatedAt: serverTimestamp()
+  });
+
+  // On mobile: switch to the target column tab after swipe
+  if (window.matchMedia("(max-width: 768px)").matches) {
+    setTimeout(() => switchTab(newColumn), 150);
+  }
+}
+
 async function editTask(taskId, updates) {
   const taskRef = doc(db, "boards", BOARD_ID, "tasks", taskId);
   await updateDoc(taskRef, { ...updates, updatedAt: serverTimestamp() });
@@ -197,7 +243,6 @@ function applySnapshot(snapshot) {
     tasks.set(docSnap.id, docSnap.data());
   });
 
-  // Seed if empty
   if (tasks.size === 0) {
     seedInitialTasks();
     return;
@@ -206,7 +251,6 @@ function applySnapshot(snapshot) {
   renderBoard();
 }
 
-// Called by drag.js when drag ends
 export function onDragEnd() {
   isDragging = false;
   if (pendingSnapshot) {
@@ -219,7 +263,6 @@ export function onDragStart() {
   isDragging = true;
 }
 
-// ===== Get tasks for drag.js =====
 export function getTasksInColumn(column) {
   const colTasks = [];
   for (const [id, task] of tasks) {
@@ -229,14 +272,6 @@ export function getTasksInColumn(column) {
 }
 
 // ===== Modal =====
-btnAdd.addEventListener("click", () => openAddModal());
-btnCancel.addEventListener("click", closeModal);
-btnSave.addEventListener("click", handleSave);
-btnDelete.addEventListener("click", handleDelete);
-modal.addEventListener("click", (e) => {
-  if (e.target === modal) closeModal();
-});
-
 function openAddModal() {
   editingTaskId = null;
   modalTitle.textContent = "Nouvelle tache";
@@ -277,7 +312,9 @@ async function handleSave() {
       when: inputWhen.value.trim()
     });
   } else {
-    await addTask(title, inputDesc.value.trim(), "todo", inputWhen.value.trim());
+    // On mobile, add to active tab's column
+    const column = window.matchMedia("(max-width: 768px)").matches ? activeTab : "todo";
+    await addTask(title, inputDesc.value.trim(), column, inputWhen.value.trim());
   }
   closeModal();
 }
@@ -288,7 +325,16 @@ async function handleDelete() {
   closeModal();
 }
 
-// Keyboard shortcut
+// Event listeners
+btnAdd.addEventListener("click", openAddModal);
+fab.addEventListener("click", openAddModal);
+btnCancel.addEventListener("click", closeModal);
+btnSave.addEventListener("click", handleSave);
+btnDelete.addEventListener("click", handleDelete);
+modal.addEventListener("click", (e) => {
+  if (e.target === modal) closeModal();
+});
+
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeModal();
 });
@@ -320,4 +366,4 @@ async function seedInitialTasks() {
 }
 
 // ===== Init Drag & Drop =====
-initDragAndDrop(board, { moveTask, getTasksInColumn, onDragStart, onDragEnd });
+initDragAndDrop(board, { moveTask, moveTaskColumn, getTasksInColumn, onDragStart, onDragEnd });

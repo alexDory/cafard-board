@@ -33,12 +33,31 @@
         <div class="status-dot" id="statusDot"></div>
         <span class="status-label" id="statusLabel">Sync</span>
       </div>
-      <button class="btn-add" id="btnAdd">
+      <button class="btn-add desktop-only" id="btnAdd">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         <span>Ajouter</span>
       </button>
     </div>
   </header>
+
+  <!-- Mobile Tab Bar -->
+  <nav class="tab-bar mobile-only" id="tabBar">
+    <button class="tab active" data-tab="todo">
+      <div class="tab-dot tab-dot--todo"></div>
+      <span class="tab-label">A faire</span>
+      <span class="tab-count" data-tab-count="todo">0</span>
+    </button>
+    <button class="tab" data-tab="doing">
+      <div class="tab-dot tab-dot--doing"></div>
+      <span class="tab-label">En cours</span>
+      <span class="tab-count" data-tab-count="doing">0</span>
+    </button>
+    <button class="tab" data-tab="done">
+      <div class="tab-dot tab-dot--done"></div>
+      <span class="tab-label">Fait</span>
+      <span class="tab-count" data-tab-count="done">0</span>
+    </button>
+  </nav>
 
   <main class="board" id="board">
     <section class="column" data-column="todo">
@@ -74,6 +93,17 @@
       <div class="column-cards" data-cards="done"></div>
     </section>
   </main>
+
+  <!-- Swipe hint (shown on first card interaction on mobile) -->
+  <div class="swipe-hint hidden" id="swipeHint">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 10h12M12 6l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Swipe pour deplacer
+  </div>
+
+  <!-- FAB (mobile) -->
+  <button class="fab mobile-only" id="fab" aria-label="Ajouter une tache">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 3v16M3 11h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  </button>
 
   <!-- Modal ajout/edition -->
   <div class="modal-overlay hidden" id="modal">

@@ -1,4 +1,4 @@
-const CACHE_NAME = "cafard-board-v2";
+const CACHE_NAME = "cafard-board-v3";
 const STATIC_ASSETS = [
   "./",
   "./index.html",
