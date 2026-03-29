@@ -13,12 +13,23 @@ import {
   serverTimestamp,
   enableIndexedDbPersistence
 } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-firestore.js";
+import {
+  getAuth,
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signOut
+} from "https://www.gstatic.com/firebasejs/11.4.0/firebase-auth.js";
 import firebaseConfig from "./firebase-config.js";
 import { initDragAndDrop } from "./drag.js";
 
 // ===== Firebase Init =====
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const auth = getAuth(app);
+const googleProvider = new GoogleAuthProvider();
 
 enableIndexedDbPersistence(db).catch(err => {
   if (err.code === 'failed-precondition') {
@@ -29,15 +40,22 @@ enableIndexedDbPersistence(db).catch(err => {
 });
 
 const BOARD_ID = "cafardland";
-const tasksRef = collection(db, "boards", BOARD_ID, "tasks");
+let tasksRef = null;
+let unsubscribeSnapshot = null;
 
 // ===== State =====
 let tasks = new Map();
 let isDragging = false;
 let pendingSnapshot = null;
 let activeTab = "todo";
+let currentUser = null;
 
 // ===== DOM Elements =====
+const loginScreen = document.getElementById("loginScreen");
+const appContainer = document.getElementById("appContainer");
+const btnLogin = document.getElementById("btnLogin");
+const loginError = document.getElementById("loginError");
+
 const board = document.getElementById("board");
 const modal = document.getElementById("modal");
 const modalTitle = document.getElementById("modalTitle");
@@ -54,6 +72,79 @@ const fab = document.getElementById("fab");
 
 let editingTaskId = null;
 
+// ===== Auth =====
+btnLogin.addEventListener("click", async () => {
+  loginError.classList.add("hidden");
+  try {
+    // Use redirect on mobile (popup often blocked), popup on desktop
+    if (window.matchMedia("(max-width: 768px)").matches) {
+      await signInWithRedirect(auth, googleProvider);
+    } else {
+      await signInWithPopup(auth, googleProvider);
+    }
+  } catch (err) {
+    console.error("Auth error:", err);
+    loginError.textContent = "Erreur de connexion. Reessaie.";
+    loginError.classList.remove("hidden");
+  }
+});
+
+// Handle redirect result (for mobile)
+getRedirectResult(auth).catch(err => {
+  if (err.code !== 'auth/redirect-cancelled-by-user') {
+    console.error("Redirect auth error:", err);
+  }
+});
+
+onAuthStateChanged(auth, (user) => {
+  if (user) {
+    currentUser = user;
+    console.log("=== CONNECTED ===");
+    console.log("UID:", user.uid);
+    console.log("Email:", user.email);
+    console.log("=================");
+    console.log("Copy this UID for Firestore rules:", user.uid);
+    showApp();
+    startFirestore();
+  } else {
+    currentUser = null;
+    showLogin();
+    stopFirestore();
+  }
+});
+
+function showLogin() {
+  loginScreen.classList.remove("hidden");
+  appContainer.classList.add("hidden");
+}
+
+function showApp() {
+  loginScreen.classList.add("hidden");
+  appContainer.classList.remove("hidden");
+}
+
+function startFirestore() {
+  tasksRef = collection(db, "boards", BOARD_ID, "tasks");
+  const q = query(tasksRef, orderBy("order"));
+  unsubscribeSnapshot = onSnapshot(q, (snapshot) => {
+    if (isDragging) {
+      pendingSnapshot = snapshot;
+      return;
+    }
+    applySnapshot(snapshot);
+  }, (error) => {
+    console.error("Firestore error:", error);
+  });
+}
+
+function stopFirestore() {
+  if (unsubscribeSnapshot) {
+    unsubscribeSnapshot();
+    unsubscribeSnapshot = null;
+  }
+  tasks.clear();
+}
+
 // ===== Online/Offline Status =====
 function updateOnlineStatus() {
   const online = navigator.onLine;
@@ -67,13 +158,9 @@ updateOnlineStatus();
 // ===== Mobile Tabs =====
 function switchTab(column) {
   activeTab = column;
-
-  // Update tab UI
   tabBar.querySelectorAll(".tab").forEach(tab => {
     tab.classList.toggle("active", tab.dataset.tab === column);
   });
-
-  // Show only active column
   document.querySelectorAll(".column").forEach(col => {
     col.classList.toggle("mobile-active", col.dataset.column === column);
   });
@@ -85,7 +172,6 @@ tabBar.addEventListener("click", (e) => {
   switchTab(tab.dataset.tab);
 });
 
-// Init: show first tab on mobile
 switchTab("todo");
 
 // ===== Render =====
@@ -109,12 +195,10 @@ function renderBoard() {
     const existingIds = new Set();
     columns[col].forEach(task => existingIds.add(task.id));
 
-    // Remove cards that no longer belong
     container.querySelectorAll(".card").forEach(card => {
       if (!existingIds.has(card.dataset.id)) card.remove();
     });
 
-    // Add or update cards
     let prevEl = null;
     for (const task of columns[col]) {
       let card = container.querySelector(`[data-id="${task.id}"]`);
@@ -157,7 +241,6 @@ function updateCardElement(card, task) {
     ${task.description ? `<div class="card-description">${escapeHtml(task.description)}</div>` : ""}
     ${task.when ? `<span class="card-when">${escapeHtml(task.when)}</span>` : ""}
   `;
-
   card.querySelector('[data-action="edit"]').addEventListener("click", (e) => {
     e.stopPropagation();
     openEditModal(task.id);
@@ -172,6 +255,7 @@ function escapeHtml(str) {
 
 // ===== Firestore CRUD =====
 export async function addTask(title, description = "", column = "todo", when = "") {
+  if (!tasksRef) return;
   const colTasks = [...tasks.values()].filter(t => t.column === column);
   const maxOrder = colTasks.reduce((max, t) => Math.max(max, t.order || 0), 0);
 
@@ -195,12 +279,10 @@ export async function moveTask(taskId, newColumn, newOrder) {
   });
 }
 
-// Move task to adjacent column (for swipe), keeping same order
 export async function moveTaskColumn(taskId, newColumn, direction) {
   const task = tasks.get(taskId);
   if (!task) return;
 
-  // Calculate order: place at end of target column
   const targetTasks = [...tasks.values()].filter(t => t.column === newColumn);
   const maxOrder = targetTasks.reduce((max, t) => Math.max(max, t.order || 0), 0);
 
@@ -211,7 +293,6 @@ export async function moveTaskColumn(taskId, newColumn, direction) {
     updatedAt: serverTimestamp()
   });
 
-  // On mobile: switch to the target column tab after swipe
   if (window.matchMedia("(max-width: 768px)").matches) {
     setTimeout(() => switchTab(newColumn), 150);
   }
@@ -227,16 +308,7 @@ async function removeTask(taskId) {
   await deleteDoc(taskRef);
 }
 
-// ===== Real-time Listener =====
-const q = query(tasksRef, orderBy("order"));
-onSnapshot(q, (snapshot) => {
-  if (isDragging) {
-    pendingSnapshot = snapshot;
-    return;
-  }
-  applySnapshot(snapshot);
-});
-
+// ===== Snapshot =====
 function applySnapshot(snapshot) {
   tasks.clear();
   snapshot.forEach(docSnap => {
@@ -312,7 +384,6 @@ async function handleSave() {
       when: inputWhen.value.trim()
     });
   } else {
-    // On mobile, add to active tab's column
     const column = window.matchMedia("(max-width: 768px)").matches ? activeTab : "todo";
     await addTask(title, inputDesc.value.trim(), column, inputWhen.value.trim());
   }
@@ -325,7 +396,6 @@ async function handleDelete() {
   closeModal();
 }
 
-// Event listeners
 btnAdd.addEventListener("click", openAddModal);
 fab.addEventListener("click", openAddModal);
 btnCancel.addEventListener("click", closeModal);
@@ -341,6 +411,7 @@ document.addEventListener("keydown", (e) => {
 
 // ===== Seed Data =====
 async function seedInitialTasks() {
+  if (!tasksRef) return;
   const seedTasks = [
     { title: "One-pager + schema avant/apres", description: "Arme de vente prete", when: "Ce soir", order: 1000 },
     { title: "Cafe avec ingenieur d'affaires Alten", description: "2-3 noms a contacter", when: "Cette semaine", order: 2000 },
