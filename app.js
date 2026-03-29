@@ -47,7 +47,6 @@ let isDragging = false;
 let pendingSnapshot = null;
 let activeTab = "todo";
 let currentUser = null;
-let seeding = false;
 let dedupDone = false;
 
 // ===== DOM Elements =====
@@ -329,11 +328,6 @@ function applySnapshot(snapshot) {
     tasks.set(docSnap.id, docSnap.data());
   });
 
-  if (tasks.size === 0 && !seeding) {
-    seedInitialTasks();
-    return;
-  }
-
   // One-time dedup: remove duplicate tasks created by seed race condition
   if (!dedupDone && tasks.size > 0) {
     dedupDone = true;
@@ -428,34 +422,6 @@ modal.addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeModal();
 });
-
-// ===== Seed Data =====
-async function seedInitialTasks() {
-  if (!tasksRef || seeding) return;
-  seeding = true;
-  const seedTasks = [
-    { title: "One-pager + schema avant/apres", description: "Arme de vente prete", when: "Ce soir", order: 1000 },
-    { title: "Cafe avec ingenieur d'affaires Alten", description: "2-3 noms a contacter", when: "Cette semaine", order: 2000 },
-    { title: "Approcher le lead migration DOORS-Jama", description: "Premier prospect chaud", when: "Semaine 2", order: 3000 },
-    { title: "Premiers RDV prospects via intros", description: "Demande validee ou angle ajuste", when: "Semaine 2-3", order: 4000 },
-    { title: "Construire la demo + ouvrir micro-entreprise", description: "Livrer et facturer", when: "Quand quelqu'un dit oui", order: 5000 },
-    { title: "Documenter avant/apres + proposer maintenance", description: "Premier cas + revenu recurrent", when: "Post-livraison", order: 6000 },
-    { title: "Demander referrals a chaque client", description: "Effet boule de neige", when: "En continu", order: 7000 },
-    { title: "Evaluer: quitter Alten ou rester", description: "Decision basee sur les donnees", when: "Mois 6+", order: 8000 }
-  ];
-
-  const batch = writeBatch(db);
-  for (const task of seedTasks) {
-    const ref = doc(tasksRef);
-    batch.set(ref, {
-      ...task,
-      column: "todo",
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    });
-  }
-  await batch.commit();
-}
 
 // ===== Dedup (one-time cleanup) =====
 async function deduplicateTasks() {

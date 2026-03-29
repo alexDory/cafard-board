@@ -3,11 +3,11 @@
 // Desktop: pointer drag between/within columns (unchanged)
 // Mobile:  three gesture modes, all via pointer events:
 //   1. Horizontal swipe → move card between columns (60px threshold)
-//   2. Quick vertical  → manual scroll (since touch-action: none on cards)
+//   2. Quick vertical  → scroll page (window.scrollBy, since on mobile
+//      the page scrolls, not a container — column has no max-height)
 //   3. Long-press 300ms + drag → reorder within column
 //
 // Cards use CSS `touch-action: none` on mobile so JS has full control.
-// This means we must handle vertical scrolling ourselves for quick flicks.
 
 let dragState = null;
 let touchState = null;
@@ -47,7 +47,7 @@ function onPointerDown(e) {
 // MOBILE: unified handler
 // Phase 1 (undecided): wait up to 300ms
 //   - horizontal move before timer → SWIPE
-//   - vertical move before timer   → SCROLL (manual)
+//   - vertical move before timer   → SCROLL (window.scrollBy)
 //   - timer fires, no movement     → long-press ready
 // Phase 2 (long-press ready):
 //   - any movement → REORDER
@@ -60,7 +60,7 @@ function startTouch(e, card) {
     momentumRAF = null;
   }
 
-  // Capture pointer so all events come to this card
+  // Capture pointer so all events route here
   card.setPointerCapture(e.pointerId);
 
   touchState = {
@@ -82,7 +82,7 @@ function startTouch(e, card) {
 
   // Start long-press countdown
   touchState.longPressTimer = setTimeout(() => {
-    if (!touchState || touchState.mode) return; // already decided
+    if (!touchState || touchState.mode) return;
     touchState.longPressReady = true;
     card.classList.add("long-press-active");
   }, LONG_PRESS_MS);
@@ -103,7 +103,6 @@ function onTouchMove(e) {
   // === Phase 1: decide mode ===
   if (!touchState.mode) {
     if (touchState.longPressReady && (absDX > 3 || absDY > 3)) {
-      // Long-press was reached → reorder
       touchState.mode = "reorder";
       e.preventDefault();
       startMobileReorder(e);
@@ -114,12 +113,10 @@ function onTouchMove(e) {
       clearTimeout(touchState.longPressTimer);
 
       if (absDX > absDY) {
-        // Horizontal → swipe between columns
         touchState.mode = "swipe";
         touchState.card.classList.add("swiping");
         showSwipeHint();
       } else {
-        // Vertical → manual scroll
         touchState.mode = "scroll";
       }
     }
@@ -161,9 +158,9 @@ function onTouchEnd(e) {
 }
 
 // =============================================
-// MOBILE SCROLL (quick vertical → scroll column)
-// Since touch-action: none, the browser won't scroll.
-// We scroll the .column-cards container manually.
+// MOBILE SCROLL (quick vertical → scroll page)
+// On mobile the page/body scrolls (column has no max-height),
+// so we use window.scrollBy instead of container.scrollTop.
 // =============================================
 
 function onScrollMove(e) {
@@ -171,10 +168,8 @@ function onScrollMove(e) {
   const dy = e.clientY - touchState.prevY;
   const dt = now - touchState.prevTime;
 
-  const container = getActiveColumnCards();
-  if (container) {
-    container.scrollTop -= dy;
-  }
+  // Finger up → page scrolls down (content moves up), and vice versa
+  window.scrollBy(0, -dy);
 
   // Track velocity for momentum
   if (dt > 0) {
@@ -186,14 +181,12 @@ function onScrollMove(e) {
 }
 
 function finishScroll() {
-  // Launch momentum scroll
   momentumVelocity = (touchState.velocityY || 0) * 16; // px per ~frame
-  const container = getActiveColumnCards();
 
-  if (container && Math.abs(momentumVelocity) > 0.5) {
+  if (Math.abs(momentumVelocity) > 0.5) {
     (function tick() {
-      momentumVelocity *= 0.95;
-      container.scrollTop -= momentumVelocity;
+      momentumVelocity *= 0.92; // friction
+      window.scrollBy(0, -momentumVelocity);
       if (Math.abs(momentumVelocity) > 0.5) {
         momentumRAF = requestAnimationFrame(tick);
       } else {
@@ -201,11 +194,6 @@ function finishScroll() {
       }
     })();
   }
-}
-
-function getActiveColumnCards() {
-  const col = document.querySelector(".column.mobile-active");
-  return col ? col.querySelector(".column-cards") : null;
 }
 
 // =============================================
