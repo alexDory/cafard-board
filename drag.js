@@ -1,12 +1,13 @@
 // ===== Drag & Drop (desktop) + Swipe & Long-Press Reorder (mobile) =====
 //
-// Desktop: pointer drag between/within columns (unchanged behavior)
-// Mobile:  horizontal swipe → move between columns (instant, 60px threshold)
-//          long-press (~300ms) then vertical drag → reorder within column
+// Desktop: pointer drag between/within columns (unchanged)
+// Mobile:  three gesture modes, all via pointer events:
+//   1. Horizontal swipe → move card between columns (60px threshold)
+//   2. Quick vertical  → manual scroll (since touch-action: none on cards)
+//   3. Long-press 300ms + drag → reorder within column
 //
-// Key fix: mobile cards use CSS `touch-action: pan-y` for normal scrolling.
-// Long-press dynamically switches to `touch-action: none` so JS can capture
-// the vertical pointer without the browser stealing it for scroll.
+// Cards use CSS `touch-action: none` on mobile so JS has full control.
+// This means we must handle vertical scrolling ourselves for quick flicks.
 
 let dragState = null;
 let touchState = null;
@@ -15,7 +16,11 @@ let callbacks = null;
 const SWIPE_THRESHOLD = 60;
 const COLUMN_ORDER = ["todo", "doing", "done"];
 const LONG_PRESS_MS = 300;
-const DECIDE_THRESHOLD = 10;
+const DECIDE_THRESHOLD = 8;
+
+// Momentum scroll
+let momentumRAF = null;
+let momentumVelocity = 0;
 
 function isMobile() {
   return window.matchMedia("(max-width: 768px)").matches;
@@ -39,40 +44,47 @@ function onPointerDown(e) {
 }
 
 // =============================================
-// MOBILE: unified touch handler
-// Phase 1: wait for long-press OR horizontal swipe
-// Phase 2a: if horizontal move detected first → swipe mode
-// Phase 2b: if long-press timer fires → reorder mode
+// MOBILE: unified handler
+// Phase 1 (undecided): wait up to 300ms
+//   - horizontal move before timer → SWIPE
+//   - vertical move before timer   → SCROLL (manual)
+//   - timer fires, no movement     → long-press ready
+// Phase 2 (long-press ready):
+//   - any movement → REORDER
 // =============================================
 
 function startTouch(e, card) {
+  // Kill any ongoing momentum scroll
+  if (momentumRAF) {
+    cancelAnimationFrame(momentumRAF);
+    momentumRAF = null;
+  }
+
+  // Capture pointer so all events come to this card
+  card.setPointerCapture(e.pointerId);
+
   touchState = {
     card,
     pointerId: e.pointerId,
     startX: e.clientX,
     startY: e.clientY,
+    prevY: e.clientY,
+    prevTime: Date.now(),
     taskId: card.dataset.id,
     column: card.closest(".column").dataset.column,
-    mode: null,       // "swipe" | "reorder" | null (undecided)
+    mode: null,       // "swipe" | "scroll" | "reorder"
     ghost: null,
     indicator: null,
     longPressTimer: null,
-    longPressReady: false  // true once timer fires (before drag starts)
+    longPressReady: false,
+    velocityY: 0
   };
 
-  // Start long-press timer
+  // Start long-press countdown
   touchState.longPressTimer = setTimeout(() => {
     if (!touchState || touchState.mode) return; // already decided
     touchState.longPressReady = true;
-
-    // Visual feedback: scale-up to signal "ready to drag"
     card.classList.add("long-press-active");
-
-    // Switch touch-action so the browser won't steal vertical pointer
-    card.style.touchAction = "none";
-
-    // Capture pointer now so subsequent moves come to this card
-    card.setPointerCapture(touchState.pointerId);
   }, LONG_PRESS_MS);
 
   card.addEventListener("pointermove", onTouchMove);
@@ -85,34 +97,43 @@ function onTouchMove(e) {
 
   const deltaX = e.clientX - touchState.startX;
   const deltaY = e.clientY - touchState.startY;
+  const absDX = Math.abs(deltaX);
+  const absDY = Math.abs(deltaY);
 
-  // === Undecided phase: pick swipe or wait for long-press ===
+  // === Phase 1: decide mode ===
   if (!touchState.mode) {
-    // If horizontal movement before long-press → swipe
-    if (!touchState.longPressReady && Math.abs(deltaX) > DECIDE_THRESHOLD && Math.abs(deltaX) > Math.abs(deltaY)) {
-      clearTimeout(touchState.longPressTimer);
-      touchState.mode = "swipe";
-      touchState.card.classList.add("swiping");
-      touchState.card.setPointerCapture(e.pointerId);
-      e.preventDefault();
-      showSwipeHint();
-    }
-    // If long-press ready and any movement → enter reorder
-    else if (touchState.longPressReady && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
+    if (touchState.longPressReady && (absDX > 3 || absDY > 3)) {
+      // Long-press was reached → reorder
       touchState.mode = "reorder";
       e.preventDefault();
       startMobileReorder(e);
-    }
-    // If vertical movement before long-press → let browser scroll (do nothing)
-    else if (!touchState.longPressReady && Math.abs(deltaY) > DECIDE_THRESHOLD && Math.abs(deltaY) > Math.abs(deltaX)) {
-      cancelTouch();
       return;
+    }
+
+    if (!touchState.longPressReady && (absDX > DECIDE_THRESHOLD || absDY > DECIDE_THRESHOLD)) {
+      clearTimeout(touchState.longPressTimer);
+
+      if (absDX > absDY) {
+        // Horizontal → swipe between columns
+        touchState.mode = "swipe";
+        touchState.card.classList.add("swiping");
+        showSwipeHint();
+      } else {
+        // Vertical → manual scroll
+        touchState.mode = "scroll";
+      }
     }
   }
 
-  if (touchState && touchState.mode === "swipe") {
+  // === Phase 2: execute mode ===
+  if (touchState.mode === "swipe") {
+    e.preventDefault();
     onSwipeMove(e, deltaX);
-  } else if (touchState && touchState.mode === "reorder") {
+  } else if (touchState.mode === "scroll") {
+    e.preventDefault();
+    onScrollMove(e);
+  } else if (touchState.mode === "reorder") {
+    e.preventDefault();
     onReorderMove(e);
   }
 }
@@ -127,10 +148,11 @@ function onTouchEnd(e) {
 
   clearTimeout(touchState.longPressTimer);
   card.classList.remove("long-press-active");
-  card.style.touchAction = "";
 
   if (touchState.mode === "swipe") {
     finishSwipe(e);
+  } else if (touchState.mode === "scroll") {
+    finishScroll();
   } else if (touchState.mode === "reorder") {
     finishMobileReorder(e);
   }
@@ -138,19 +160,52 @@ function onTouchEnd(e) {
   touchState = null;
 }
 
-/** Cancel touch tracking entirely — let browser handle scroll */
-function cancelTouch() {
-  if (!touchState) return;
-  const { card } = touchState;
+// =============================================
+// MOBILE SCROLL (quick vertical → scroll column)
+// Since touch-action: none, the browser won't scroll.
+// We scroll the .column-cards container manually.
+// =============================================
 
-  clearTimeout(touchState.longPressTimer);
-  card.classList.remove("long-press-active");
-  card.style.touchAction = "";
-  card.removeEventListener("pointermove", onTouchMove);
-  card.removeEventListener("pointerup", onTouchEnd);
-  card.removeEventListener("pointercancel", onTouchEnd);
+function onScrollMove(e) {
+  const now = Date.now();
+  const dy = e.clientY - touchState.prevY;
+  const dt = now - touchState.prevTime;
 
-  touchState = null;
+  const container = getActiveColumnCards();
+  if (container) {
+    container.scrollTop -= dy;
+  }
+
+  // Track velocity for momentum
+  if (dt > 0) {
+    touchState.velocityY = dy / dt; // px/ms
+  }
+
+  touchState.prevY = e.clientY;
+  touchState.prevTime = now;
+}
+
+function finishScroll() {
+  // Launch momentum scroll
+  momentumVelocity = (touchState.velocityY || 0) * 16; // px per ~frame
+  const container = getActiveColumnCards();
+
+  if (container && Math.abs(momentumVelocity) > 0.5) {
+    (function tick() {
+      momentumVelocity *= 0.95;
+      container.scrollTop -= momentumVelocity;
+      if (Math.abs(momentumVelocity) > 0.5) {
+        momentumRAF = requestAnimationFrame(tick);
+      } else {
+        momentumRAF = null;
+      }
+    })();
+  }
+}
+
+function getActiveColumnCards() {
+  const col = document.querySelector(".column.mobile-active");
+  return col ? col.querySelector(".column-cards") : null;
 }
 
 // =============================================
@@ -158,7 +213,6 @@ function cancelTouch() {
 // =============================================
 
 function onSwipeMove(e, deltaX) {
-  e.preventDefault();
   const { card, column } = touchState;
 
   const resistance = 0.6;
@@ -235,16 +289,13 @@ function startMobileReorder(e) {
 
 function onReorderMove(e) {
   if (!touchState || !touchState.ghost) return;
-  e.preventDefault();
 
   const { ghost, offsetX, offsetY, column } = touchState;
   ghost.style.left = (e.clientX - offsetX) + "px";
   ghost.style.top = (e.clientY - offsetY) + "px";
 
   const col = document.querySelector(`.column[data-column="${column}"]`);
-  if (col) {
-    showMobileDropIndicator(col, e.clientY);
-  }
+  if (col) showMobileDropIndicator(col, e.clientY);
 }
 
 function finishMobileReorder(e) {
@@ -269,10 +320,10 @@ function showMobileDropIndicator(column, clientY) {
   const cards = [...cardsContainer.querySelectorAll(".card:not(.dragging)")];
 
   let insertBefore = null;
-  for (const card of cards) {
-    const rect = card.getBoundingClientRect();
+  for (const c of cards) {
+    const rect = c.getBoundingClientRect();
     if (clientY < rect.top + rect.height / 2) {
-      insertBefore = card;
+      insertBefore = c;
       break;
     }
   }
@@ -415,10 +466,10 @@ function showDesktopDropIndicator(column, clientY) {
   const cards = [...cardsContainer.querySelectorAll(".card:not(.dragging)")];
 
   let insertBefore = null;
-  for (const card of cards) {
-    const rect = card.getBoundingClientRect();
+  for (const c of cards) {
+    const rect = c.getBoundingClientRect();
     if (clientY < rect.top + rect.height / 2) {
-      insertBefore = card;
+      insertBefore = c;
       break;
     }
   }

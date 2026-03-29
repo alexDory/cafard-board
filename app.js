@@ -48,6 +48,7 @@ let pendingSnapshot = null;
 let activeTab = "todo";
 let currentUser = null;
 let seeding = false;
+let dedupDone = false;
 
 // ===== DOM Elements =====
 const loginScreen = document.getElementById("loginScreen");
@@ -333,6 +334,12 @@ function applySnapshot(snapshot) {
     return;
   }
 
+  // One-time dedup: remove duplicate tasks created by seed race condition
+  if (!dedupDone && tasks.size > 0) {
+    dedupDone = true;
+    deduplicateTasks();
+  }
+
   renderBoard();
 }
 
@@ -446,6 +453,36 @@ async function seedInitialTasks() {
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     });
+  }
+  await batch.commit();
+}
+
+// ===== Dedup (one-time cleanup) =====
+async function deduplicateTasks() {
+  // Group tasks by title+description (catches seed duplicates)
+  const groups = new Map();
+  for (const [id, task] of tasks) {
+    const key = `${task.title}|||${task.description || ""}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ id, ...task });
+  }
+
+  const toDelete = [];
+  for (const [, group] of groups) {
+    if (group.length <= 1) continue;
+    // Keep the one with the lowest order (original), delete the rest
+    group.sort((a, b) => (a.order || 0) - (b.order || 0));
+    for (let i = 1; i < group.length; i++) {
+      toDelete.push(group[i].id);
+    }
+  }
+
+  if (toDelete.length === 0) return;
+  console.log(`Dedup: removing ${toDelete.length} duplicate tasks`);
+
+  const batch = writeBatch(db);
+  for (const id of toDelete) {
+    batch.delete(doc(db, "boards", BOARD_ID, "tasks", id));
   }
   await batch.commit();
 }

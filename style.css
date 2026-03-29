@@ -777,7 +777,7 @@ body {
   /* Cards: bigger touch targets */
   .card {
     padding: 16px 16px 14px;
-    touch-action: pan-y;
+    touch-action: none;
     cursor: default;
   }
 
