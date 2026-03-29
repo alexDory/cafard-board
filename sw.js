@@ -1,4 +1,4 @@
-const CACHE_NAME = "cafard-board-v1";
+const CACHE_NAME = "cafard-board-v2";
 const STATIC_ASSETS = [
   "./",
   "./index.html",
@@ -10,7 +10,7 @@ const STATIC_ASSETS = [
   "./icon.svg"
 ];
 
-// Install: pre-cache static assets
+// Install: pre-cache static assets, skip waiting to activate immediately
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
@@ -18,7 +18,7 @@ self.addEventListener("install", (event) => {
   self.skipWaiting();
 });
 
-// Activate: clean old caches
+// Activate: clean old caches and claim clients immediately
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
@@ -28,16 +28,18 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Fetch: cache-first for static, network-first for Firebase/external
+// Fetch: network-first for own assets, network-only for Firebase
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
-  // Let Firebase SDK and Firestore requests go to network directly
+  // Firebase/external: always network
   if (
     url.hostname.includes("gstatic.com") ||
     url.hostname.includes("googleapis.com") ||
     url.hostname.includes("firebaseio.com") ||
-    url.hostname.includes("firebase")
+    url.hostname.includes("firebase") ||
+    url.hostname.includes("fonts.googleapis.com") ||
+    url.hostname.includes("fonts.gstatic.com")
   ) {
     event.respondWith(
       fetch(event.request).catch(() => caches.match(event.request))
@@ -45,17 +47,24 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Static assets: cache-first
+  // Own assets: network-first, fallback to cache (for offline)
+  if (url.origin === self.location.origin) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // Everything else: network with cache fallback
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        if (response.ok && url.origin === self.location.origin) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return response;
-      });
-    })
+    fetch(event.request).catch(() => caches.match(event.request))
   );
 });
