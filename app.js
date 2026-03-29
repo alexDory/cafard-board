@@ -47,6 +47,7 @@ let isDragging = false;
 let pendingSnapshot = null;
 let activeTab = "todo";
 let currentUser = null;
+let seeding = false;
 
 // ===== DOM Elements =====
 const loginScreen = document.getElementById("loginScreen");
@@ -327,7 +328,7 @@ function applySnapshot(snapshot) {
     tasks.set(docSnap.id, docSnap.data());
   });
 
-  if (tasks.size === 0) {
+  if (tasks.size === 0 && !seeding) {
     seedInitialTasks();
     return;
   }
@@ -423,7 +424,8 @@ document.addEventListener("keydown", (e) => {
 
 // ===== Seed Data =====
 async function seedInitialTasks() {
-  if (!tasksRef) return;
+  if (!tasksRef || seeding) return;
+  seeding = true;
   const seedTasks = [
     { title: "One-pager + schema avant/apres", description: "Arme de vente prete", when: "Ce soir", order: 1000 },
     { title: "Cafe avec ingenieur d'affaires Alten", description: "2-3 noms a contacter", when: "Cette semaine", order: 2000 },

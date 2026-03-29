@@ -786,6 +786,14 @@ body {
     bottom: 14px;
   }
 
+  .card.long-press-active {
+    transform: scale(1.03);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    border-color: var(--gold);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    z-index: 10;
+  }
+
   .card:hover {
     transform: none;
     box-shadow: none;

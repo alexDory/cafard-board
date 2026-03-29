@@ -1,4 +1,12 @@
-// ===== Drag & Drop (desktop + mobile reorder) + Swipe (mobile column change) =====
+// ===== Drag & Drop (desktop) + Swipe & Long-Press Reorder (mobile) =====
+//
+// Desktop: pointer drag between/within columns (unchanged behavior)
+// Mobile:  horizontal swipe → move between columns (instant, 60px threshold)
+//          long-press (~300ms) then vertical drag → reorder within column
+//
+// Key fix: mobile cards use CSS `touch-action: pan-y` for normal scrolling.
+// Long-press dynamically switches to `touch-action: none` so JS can capture
+// the vertical pointer without the browser stealing it for scroll.
 
 let dragState = null;
 let touchState = null;
@@ -6,6 +14,7 @@ let callbacks = null;
 
 const SWIPE_THRESHOLD = 60;
 const COLUMN_ORDER = ["todo", "doing", "done"];
+const LONG_PRESS_MS = 300;
 const DECIDE_THRESHOLD = 10;
 
 function isMobile() {
@@ -31,7 +40,9 @@ function onPointerDown(e) {
 
 // =============================================
 // MOBILE: unified touch handler
-// Decides between horizontal swipe and vertical reorder
+// Phase 1: wait for long-press OR horizontal swipe
+// Phase 2a: if horizontal move detected first → swipe mode
+// Phase 2b: if long-press timer fires → reorder mode
 // =============================================
 
 function startTouch(e, card) {
@@ -42,10 +53,27 @@ function startTouch(e, card) {
     startY: e.clientY,
     taskId: card.dataset.id,
     column: card.closest(".column").dataset.column,
-    mode: null, // "swipe" | "reorder" | null (undecided)
+    mode: null,       // "swipe" | "reorder" | null (undecided)
     ghost: null,
-    indicator: null
+    indicator: null,
+    longPressTimer: null,
+    longPressReady: false  // true once timer fires (before drag starts)
   };
+
+  // Start long-press timer
+  touchState.longPressTimer = setTimeout(() => {
+    if (!touchState || touchState.mode) return; // already decided
+    touchState.longPressReady = true;
+
+    // Visual feedback: scale-up to signal "ready to drag"
+    card.classList.add("long-press-active");
+
+    // Switch touch-action so the browser won't steal vertical pointer
+    card.style.touchAction = "none";
+
+    // Capture pointer now so subsequent moves come to this card
+    card.setPointerCapture(touchState.pointerId);
+  }, LONG_PRESS_MS);
 
   card.addEventListener("pointermove", onTouchMove);
   card.addEventListener("pointerup", onTouchEnd);
@@ -58,25 +86,33 @@ function onTouchMove(e) {
   const deltaX = e.clientX - touchState.startX;
   const deltaY = e.clientY - touchState.startY;
 
-  // Decide mode once
-  if (!touchState.mode && (Math.abs(deltaX) > DECIDE_THRESHOLD || Math.abs(deltaY) > DECIDE_THRESHOLD)) {
-    if (Math.abs(deltaX) > Math.abs(deltaY)) {
+  // === Undecided phase: pick swipe or wait for long-press ===
+  if (!touchState.mode) {
+    // If horizontal movement before long-press → swipe
+    if (!touchState.longPressReady && Math.abs(deltaX) > DECIDE_THRESHOLD && Math.abs(deltaX) > Math.abs(deltaY)) {
+      clearTimeout(touchState.longPressTimer);
       touchState.mode = "swipe";
       touchState.card.classList.add("swiping");
       touchState.card.setPointerCapture(e.pointerId);
       e.preventDefault();
       showSwipeHint();
-    } else {
+    }
+    // If long-press ready and any movement → enter reorder
+    else if (touchState.longPressReady && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
       touchState.mode = "reorder";
-      touchState.card.setPointerCapture(e.pointerId);
       e.preventDefault();
       startMobileReorder(e);
     }
+    // If vertical movement before long-press → let browser scroll (do nothing)
+    else if (!touchState.longPressReady && Math.abs(deltaY) > DECIDE_THRESHOLD && Math.abs(deltaY) > Math.abs(deltaX)) {
+      cancelTouch();
+      return;
+    }
   }
 
-  if (touchState.mode === "swipe") {
+  if (touchState && touchState.mode === "swipe") {
     onSwipeMove(e, deltaX);
-  } else if (touchState.mode === "reorder") {
+  } else if (touchState && touchState.mode === "reorder") {
     onReorderMove(e);
   }
 }
@@ -89,11 +125,30 @@ function onTouchEnd(e) {
   card.removeEventListener("pointerup", onTouchEnd);
   card.removeEventListener("pointercancel", onTouchEnd);
 
+  clearTimeout(touchState.longPressTimer);
+  card.classList.remove("long-press-active");
+  card.style.touchAction = "";
+
   if (touchState.mode === "swipe") {
     finishSwipe(e);
   } else if (touchState.mode === "reorder") {
     finishMobileReorder(e);
   }
+
+  touchState = null;
+}
+
+/** Cancel touch tracking entirely — let browser handle scroll */
+function cancelTouch() {
+  if (!touchState) return;
+  const { card } = touchState;
+
+  clearTimeout(touchState.longPressTimer);
+  card.classList.remove("long-press-active");
+  card.style.touchAction = "";
+  card.removeEventListener("pointermove", onTouchMove);
+  card.removeEventListener("pointerup", onTouchEnd);
+  card.removeEventListener("pointercancel", onTouchEnd);
 
   touchState = null;
 }
@@ -155,7 +210,7 @@ function snapBack(card) {
 }
 
 // =============================================
-// MOBILE REORDER (vertical → reorder within column)
+// MOBILE REORDER (long-press → vertical drag)
 // =============================================
 
 function startMobileReorder(e) {
@@ -169,6 +224,7 @@ function startMobileReorder(e) {
   ghost.style.top = rect.top + "px";
   document.body.appendChild(ghost);
 
+  card.classList.remove("long-press-active");
   card.classList.add("dragging");
   touchState.ghost = ghost;
   touchState.offsetX = e.clientX - rect.left;
@@ -185,7 +241,6 @@ function onReorderMove(e) {
   ghost.style.left = (e.clientX - offsetX) + "px";
   ghost.style.top = (e.clientY - offsetY) + "px";
 
-  // Show drop indicator within the same column
   const col = document.querySelector(`.column[data-column="${column}"]`);
   if (col) {
     showMobileDropIndicator(col, e.clientY);
@@ -195,7 +250,6 @@ function onReorderMove(e) {
 function finishMobileReorder(e) {
   const { card, ghost, taskId, column } = touchState;
 
-  // Calculate new order
   const col = document.querySelector(`.column[data-column="${column}"]`);
   if (col) {
     const newOrder = calculateDropOrder(col, e.clientY, taskId);
