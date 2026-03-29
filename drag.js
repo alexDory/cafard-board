@@ -1,12 +1,12 @@
-// ===== Drag & Drop (desktop) + Swipe (mobile) =====
+// ===== Drag & Drop (desktop + mobile reorder) + Swipe (mobile column change) =====
 
 let dragState = null;
-let swipeState = null;
+let touchState = null;
 let callbacks = null;
 
 const SWIPE_THRESHOLD = 60;
-const SWIPE_MAX_Y = 40;
 const COLUMN_ORDER = ["todo", "doing", "done"];
+const DECIDE_THRESHOLD = 10;
 
 function isMobile() {
   return window.matchMedia("(max-width: 768px)").matches;
@@ -23,93 +23,107 @@ function onPointerDown(e) {
   if (e.button !== 0 && e.pointerType === "mouse") return;
 
   if (isMobile()) {
-    startSwipe(e, card);
+    startTouch(e, card);
   } else {
     startDrag(e, card);
   }
 }
 
 // =============================================
-// SWIPE (mobile)
+// MOBILE: unified touch handler
+// Decides between horizontal swipe and vertical reorder
 // =============================================
 
-function startSwipe(e, card) {
-  swipeState = {
+function startTouch(e, card) {
+  touchState = {
     card,
+    pointerId: e.pointerId,
     startX: e.clientX,
     startY: e.clientY,
-    currentX: e.clientX,
     taskId: card.dataset.id,
     column: card.closest(".column").dataset.column,
-    swiping: false,
-    decided: false
+    mode: null, // "swipe" | "reorder" | null (undecided)
+    ghost: null,
+    indicator: null
   };
 
-  card.addEventListener("pointermove", onSwipeMove);
-  card.addEventListener("pointerup", onSwipeEnd);
-  card.addEventListener("pointercancel", onSwipeEnd);
+  card.addEventListener("pointermove", onTouchMove);
+  card.addEventListener("pointerup", onTouchEnd);
+  card.addEventListener("pointercancel", onTouchEnd);
 }
 
-function onSwipeMove(e) {
-  if (!swipeState) return;
+function onTouchMove(e) {
+  if (!touchState) return;
 
-  swipeState.currentX = e.clientX;
-  const deltaX = e.clientX - swipeState.startX;
-  const deltaY = e.clientY - swipeState.startY;
+  const deltaX = e.clientX - touchState.startX;
+  const deltaY = e.clientY - touchState.startY;
 
-  // Decide once: is this a horizontal swipe or a vertical scroll?
-  if (!swipeState.decided && (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10)) {
-    swipeState.decided = true;
+  // Decide mode once
+  if (!touchState.mode && (Math.abs(deltaX) > DECIDE_THRESHOLD || Math.abs(deltaY) > DECIDE_THRESHOLD)) {
     if (Math.abs(deltaX) > Math.abs(deltaY)) {
-      swipeState.swiping = true;
-      swipeState.card.classList.add("swiping");
-      swipeState.card.setPointerCapture(e.pointerId);
+      touchState.mode = "swipe";
+      touchState.card.classList.add("swiping");
+      touchState.card.setPointerCapture(e.pointerId);
       e.preventDefault();
-
-      // Show hint on first ever swipe
       showSwipeHint();
     } else {
-      // Vertical scroll — cancel swipe tracking
-      cleanupSwipe();
-      return;
+      touchState.mode = "reorder";
+      touchState.card.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      startMobileReorder(e);
     }
   }
 
-  if (!swipeState.swiping) return;
-  e.preventDefault();
-
-  // Visual feedback: translate card horizontally with resistance
-  const resistance = 0.6;
-  const tx = deltaX * resistance;
-  const opacity = Math.max(0.4, 1 - Math.abs(deltaX) / 300);
-  swipeState.card.style.transform = `translateX(${tx}px)`;
-  swipeState.card.style.opacity = opacity;
-
-  // Color hint based on direction
-  const colIdx = COLUMN_ORDER.indexOf(swipeState.column);
-  if (deltaX > SWIPE_THRESHOLD && colIdx < COLUMN_ORDER.length - 1) {
-    swipeState.card.style.borderColor = "rgba(255,255,255,0.15)";
-  } else if (deltaX < -SWIPE_THRESHOLD && colIdx > 0) {
-    swipeState.card.style.borderColor = "rgba(255,255,255,0.15)";
-  } else {
-    swipeState.card.style.borderColor = "";
+  if (touchState.mode === "swipe") {
+    onSwipeMove(e, deltaX);
+  } else if (touchState.mode === "reorder") {
+    onReorderMove(e);
   }
 }
 
-function onSwipeEnd(e) {
-  if (!swipeState) return;
+function onTouchEnd(e) {
+  if (!touchState) return;
 
-  const { card, startX, taskId, column, swiping } = swipeState;
-  const deltaX = e.clientX - startX;
+  const { card } = touchState;
+  card.removeEventListener("pointermove", onTouchMove);
+  card.removeEventListener("pointerup", onTouchEnd);
+  card.removeEventListener("pointercancel", onTouchEnd);
 
-  card.removeEventListener("pointermove", onSwipeMove);
-  card.removeEventListener("pointerup", onSwipeEnd);
-  card.removeEventListener("pointercancel", onSwipeEnd);
-
-  if (!swiping) {
-    swipeState = null;
-    return;
+  if (touchState.mode === "swipe") {
+    finishSwipe(e);
+  } else if (touchState.mode === "reorder") {
+    finishMobileReorder(e);
   }
+
+  touchState = null;
+}
+
+// =============================================
+// MOBILE SWIPE (horizontal → change column)
+// =============================================
+
+function onSwipeMove(e, deltaX) {
+  e.preventDefault();
+  const { card, column } = touchState;
+
+  const resistance = 0.6;
+  const tx = deltaX * resistance;
+  const opacity = Math.max(0.4, 1 - Math.abs(deltaX) / 300);
+  card.style.transform = `translateX(${tx}px)`;
+  card.style.opacity = opacity;
+
+  const colIdx = COLUMN_ORDER.indexOf(column);
+  if ((deltaX > SWIPE_THRESHOLD && colIdx < COLUMN_ORDER.length - 1) ||
+      (deltaX < -SWIPE_THRESHOLD && colIdx > 0)) {
+    card.style.borderColor = "rgba(255,255,255,0.15)";
+  } else {
+    card.style.borderColor = "";
+  }
+}
+
+function finishSwipe(e) {
+  const { card, startX, taskId, column } = touchState;
+  const deltaX = e.clientX - startX;
 
   card.classList.remove("swiping");
   card.style.borderColor = "";
@@ -117,43 +131,114 @@ function onSwipeEnd(e) {
   const colIdx = COLUMN_ORDER.indexOf(column);
 
   if (deltaX > SWIPE_THRESHOLD && colIdx < COLUMN_ORDER.length - 1) {
-    // Swipe right → next column
     const newColumn = COLUMN_ORDER[colIdx + 1];
     card.classList.add("swipe-out-right");
     card.addEventListener("animationend", () => {
       callbacks.moveTaskColumn(taskId, newColumn, "right");
     }, { once: true });
   } else if (deltaX < -SWIPE_THRESHOLD && colIdx > 0) {
-    // Swipe left → previous column
     const newColumn = COLUMN_ORDER[colIdx - 1];
     card.classList.add("swipe-out-left");
     card.addEventListener("animationend", () => {
       callbacks.moveTaskColumn(taskId, newColumn, "left");
     }, { once: true });
   } else {
-    // Not enough — snap back
-    card.style.transition = "transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s";
-    card.style.transform = "";
-    card.style.opacity = "";
-    setTimeout(() => {
-      card.style.transition = "";
-    }, 300);
+    snapBack(card);
   }
-
-  swipeState = null;
 }
 
-function cleanupSwipe() {
-  if (!swipeState) return;
-  const { card } = swipeState;
-  card.removeEventListener("pointermove", onSwipeMove);
-  card.removeEventListener("pointerup", onSwipeEnd);
-  card.removeEventListener("pointercancel", onSwipeEnd);
-  card.classList.remove("swiping");
+function snapBack(card) {
+  card.style.transition = "transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s";
   card.style.transform = "";
   card.style.opacity = "";
-  card.style.borderColor = "";
-  swipeState = null;
+  setTimeout(() => { card.style.transition = ""; }, 300);
+}
+
+// =============================================
+// MOBILE REORDER (vertical → reorder within column)
+// =============================================
+
+function startMobileReorder(e) {
+  const { card } = touchState;
+  const rect = card.getBoundingClientRect();
+
+  const ghost = card.cloneNode(true);
+  ghost.className = "card drag-ghost";
+  ghost.style.width = rect.width + "px";
+  ghost.style.left = rect.left + "px";
+  ghost.style.top = rect.top + "px";
+  document.body.appendChild(ghost);
+
+  card.classList.add("dragging");
+  touchState.ghost = ghost;
+  touchState.offsetX = e.clientX - rect.left;
+  touchState.offsetY = e.clientY - rect.top;
+
+  callbacks.onDragStart();
+}
+
+function onReorderMove(e) {
+  if (!touchState || !touchState.ghost) return;
+  e.preventDefault();
+
+  const { ghost, offsetX, offsetY, column } = touchState;
+  ghost.style.left = (e.clientX - offsetX) + "px";
+  ghost.style.top = (e.clientY - offsetY) + "px";
+
+  // Show drop indicator within the same column
+  const col = document.querySelector(`.column[data-column="${column}"]`);
+  if (col) {
+    showMobileDropIndicator(col, e.clientY);
+  }
+}
+
+function finishMobileReorder(e) {
+  const { card, ghost, taskId, column } = touchState;
+
+  // Calculate new order
+  const col = document.querySelector(`.column[data-column="${column}"]`);
+  if (col) {
+    const newOrder = calculateDropOrder(col, e.clientY, taskId);
+    callbacks.moveTask(taskId, column, newOrder);
+  }
+
+  card.classList.remove("dragging");
+  if (ghost) ghost.remove();
+  removeMobileDropIndicator();
+  callbacks.onDragEnd();
+}
+
+function showMobileDropIndicator(column, clientY) {
+  removeMobileDropIndicator();
+
+  const cardsContainer = column.querySelector(".column-cards");
+  const cards = [...cardsContainer.querySelectorAll(".card:not(.dragging)")];
+
+  let insertBefore = null;
+  for (const card of cards) {
+    const rect = card.getBoundingClientRect();
+    if (clientY < rect.top + rect.height / 2) {
+      insertBefore = card;
+      break;
+    }
+  }
+
+  const indicator = document.createElement("div");
+  indicator.className = "drop-indicator";
+  touchState.indicator = indicator;
+
+  if (insertBefore) {
+    cardsContainer.insertBefore(indicator, insertBefore);
+  } else {
+    cardsContainer.appendChild(indicator);
+  }
+}
+
+function removeMobileDropIndicator() {
+  if (touchState && touchState.indicator) {
+    touchState.indicator.remove();
+    touchState.indicator = null;
+  }
 }
 
 let hintShown = false;
@@ -168,7 +253,7 @@ function showSwipeHint() {
 }
 
 // =============================================
-// DRAG & DROP (desktop)
+// DESKTOP DRAG & DROP
 // =============================================
 
 function startDrag(e, card) {
@@ -215,9 +300,9 @@ function onDragMove(e) {
   highlightColumn(targetCol);
 
   if (targetCol) {
-    showDropIndicator(targetCol, e.clientY);
+    showDesktopDropIndicator(targetCol, e.clientY);
   } else {
-    removeDropIndicator();
+    removeDesktopDropIndicator();
   }
 }
 
@@ -236,7 +321,7 @@ function onDragUp(e) {
 
   card.classList.remove("dragging");
   ghost.remove();
-  removeDropIndicator();
+  removeDesktopDropIndicator();
   clearHighlights();
 
   card.removeEventListener("pointermove", onDragMove);
@@ -270,8 +355,8 @@ function clearHighlights() {
   });
 }
 
-function showDropIndicator(column, clientY) {
-  removeDropIndicator();
+function showDesktopDropIndicator(column, clientY) {
+  removeDesktopDropIndicator();
   const cardsContainer = column.querySelector(".column-cards");
   const cards = [...cardsContainer.querySelectorAll(".card:not(.dragging)")];
 
@@ -295,12 +380,16 @@ function showDropIndicator(column, clientY) {
   }
 }
 
-function removeDropIndicator() {
+function removeDesktopDropIndicator() {
   if (dragState && dragState.indicator) {
     dragState.indicator.remove();
     dragState.indicator = null;
   }
 }
+
+// =============================================
+// SHARED: calculate drop order
+// =============================================
 
 function calculateDropOrder(column, clientY, draggedId) {
   const colName = column.dataset.column;

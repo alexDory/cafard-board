@@ -261,25 +261,47 @@ export async function addTask(title, description = "", column = "todo", when = "
 }
 
 export async function moveTask(taskId, newColumn, newOrder) {
+  const task = tasks.get(taskId);
   const taskRef = doc(db, "boards", BOARD_ID, "tasks", taskId);
-  await updateDoc(taskRef, {
+
+  const updates = {
     column: newColumn,
     order: newOrder,
     updatedAt: serverTimestamp()
-  });
+  };
+
+  // Save previous position when changing column (for restore on move-back)
+  if (task && task.column !== newColumn) {
+    updates.previousColumn = task.column;
+    updates.previousOrder = task.order;
+  }
+
+  await updateDoc(taskRef, updates);
 }
 
 export async function moveTaskColumn(taskId, newColumn, direction) {
   const task = tasks.get(taskId);
   if (!task) return;
 
-  const targetTasks = [...tasks.values()].filter(t => t.column === newColumn);
-  const maxOrder = targetTasks.reduce((max, t) => Math.max(max, t.order || 0), 0);
+  const currentColumn = task.column;
+  const currentOrder = task.order;
+
+  // Check if we're moving back to the previous column — restore original position
+  let newOrder;
+  if (task.previousColumn === newColumn && task.previousOrder != null) {
+    newOrder = task.previousOrder;
+  } else {
+    const targetTasks = [...tasks.values()].filter(t => t.column === newColumn);
+    const maxOrder = targetTasks.reduce((max, t) => Math.max(max, t.order || 0), 0);
+    newOrder = maxOrder + 1000;
+  }
 
   const taskRef = doc(db, "boards", BOARD_ID, "tasks", taskId);
   await updateDoc(taskRef, {
     column: newColumn,
-    order: maxOrder + 1000,
+    order: newOrder,
+    previousColumn: currentColumn,
+    previousOrder: currentOrder,
     updatedAt: serverTimestamp()
   });
 
