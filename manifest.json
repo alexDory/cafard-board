@@ -4,8 +4,8 @@
   "description": "Kanban board pour gerer le plan d'action CafardLand",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#1a1a2e",
-  "theme_color": "#e94560",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
   "icons": [
     {
       "src": "icon.svg",
